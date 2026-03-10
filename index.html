@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Block Blast - Heavy FX Edition</title>
+    <style>
+        * { box-sizing: border-box; touch-action: none; -webkit-user-select: none; }
+        body { 
+            text-align: center; font-family: 'Arial Rounded MT Bold', sans-serif; 
+            background: #0f172a; color: white; margin: 0; padding: 0; 
+            overflow: hidden; display: flex; flex-direction: column; 
+            align-items: center; height: 100vh;
+        }
+
+        .top-bar { width: 100%; max-width: 400px; display: flex; justify-content: space-between; padding: 15px 25px; align-items: center; }
+        .score-main { font-size: 90px; font-weight: bold; margin: 5px 0; text-shadow: 0 4px 10px rgba(0,0,0,0.5); transition: transform 0.1s; }
+
+        #container { position: relative; width: 100%; flex-grow: 1; display: flex; flex-direction: column; align-items: center; }
+        canvas { background: #1e293b; border-radius: 12px; border: 5px solid #334155; }
+
+        #game-over {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: linear-gradient(180deg, #6d28d9, #4c1d95);
+            display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 1000;
+        }
+        .btn-retry { 
+            margin-top: 30px; width: 90px; height: 90px; background: #fbbf24; 
+            border: none; border-radius: 20px; font-size: 50px; color: white;
+            box-shadow: 0 8px 0 #b45309; cursor: pointer;
+        }
+        
+        #combo-notif {
+            position: absolute; top: 30%; font-size: 70px; font-weight: bold;
+            pointer-events: none; display: none; z-index: 500;
+            color: #fbbf24; text-shadow: 0 0 20px #fff, 0 0 40px #fbbf24;
+            animation: comboAnim 0.6s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+        }
+        @keyframes comboAnim { 
+            0% { scale: 0.2; opacity: 0; transform: rotate(-10deg); } 
+            50% { scale: 1.3; opacity: 1; transform: rotate(5deg); } 
+            100% { scale: 1; opacity: 0; transform: translateY(-100px); } 
+        }
+    </style>
+</head>
+<body>
+
+    <div id="game-over">
+        <div style="font-size: 80px;">👑</div>
+        <h2 style="margin: 0; font-size: 32px;">Best Score!</h2>
+        <div id="final-score" style="font-size: 100px; font-weight: bold;">0</div>
+        <button class="btn-retry" onclick="resetGame()">▶</button>
+    </div>
+
+    <div class="top-bar">
+        <div style="font-size: 26px;">👑 <span id="high-score">0</span></div>
+        <div style="font-size: 26px; opacity: 0.5;">⚙️</div>
+    </div>
+
+    <h1 class="score-main" id="score">0</h1>
+
+    <div id="container">
+        <div id="combo-notif">COMBO!</div>
+        <canvas id="gameCanvas"></canvas>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        const GRID_SIZE = 8;
+        const COLORS = ["#FF2E63", "#FFD700", "#08FFC8", "#2196F3", "#A06EE1", "#FF5E78"];
+        
+        let grid = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(0));
+        let shapes = [];
+        let particles = [];
+        let score = 0;
+        let combo = 0;
+        let dragItem = null;
+        let CELL_SIZE, OFFSET_X, OFFSET_Y;
+        let isGameOver = false;
+        let shakeTime = 0;
+
+        function init() {
+            const size = Math.min(window.innerWidth - 40, window.innerHeight * 0.55);
+            canvas.width = size;
+            canvas.height = size * 1.45;
+            CELL_SIZE = (canvas.width * 0.96) / GRID_SIZE;
+            OFFSET_X = (canvas.width - (CELL_SIZE * GRID_SIZE)) / 2;
+            OFFSET_Y = 12;
+            spawnShapes();
+        }
+
+        function drawBlock(x, y, size, color, alpha = 1, isFlash = false) {
+            ctx.save();
+            ctx.globalAlpha = alpha;
+            
+            // Body
+            ctx.fillStyle = isGameOver ? "#475569" : (isFlash ? "#FFFFFF" : color);
+            ctx.beginPath();
+            ctx.roundRect(x + 1, y + 1, size - 2, size - 2, 8);
+            ctx.fill();
+
+            // Reflection Effect (Tebal & Tajam)
+            if(!isFlash) {
+                ctx.fillStyle = "rgba(255,255,255,0.4)";
+                ctx.beginPath();
+                ctx.roundRect(x + 5, y + 5, size - 10, size / 3, 4);
+                ctx.fill();
+            }
+
+            // Outline
+            ctx.strokeStyle = "rgba(0,0,0,0.15)";
+            ctx.lineWidth = 2;
+            ctx.strokeRect(x+1, y+1, size-2, size-2);
+
+            ctx.restore();
+        }
+
+        function spawnShapes() {
+            shapes = [];
+            const types = [[[1]], [[1,1]], [[1,1,1]], [[1,1],[1,1]], [[1,1,1],[0,1,0]], [[1,1,1,1]]];
+            for(let i=0; i<3; i++) {
+                let t = types[Math.floor(Math.random() * types.length)];
+                let c = COLORS[Math.floor(Math.random() * COLORS.length)];
+                let area = canvas.width / 3;
+                shapes.push({
+                    type: t, color: c,
+                    x: area * i + area/2 - (t[0].length * (CELL_SIZE*0.55))/2,
+                    y: canvas.height - (CELL_SIZE * 3.5),
+                    origX: area * i + area/2 - (t[0].length * (CELL_SIZE*0.55))/2,
+                    origY: canvas.height - (CELL_SIZE * 3.5),
+                    scale: 0.55
+                });
+            }
+            checkGameOver();
+        }
+
+        function createHeavyExplosion(x, y, color) {
+            // Lebih banyak partikel (12 per blok)
+            for(let i=0; i<12; i++) {
+                particles.push({
+                    x: x + CELL_SIZE/2, y: y + CELL_SIZE/2, 
+                    vx: (Math.random()-0.5)*20, 
+                    vy: (Math.random()-0.5)*20, 
+                    size: Math.random()*8 + 4,
+                    life: 1.0, 
+                    color: color,
+                    gravity: 0.5
+                });
+            }
+        }
+
+        function checkClear() {
+            let rToClear = [];
+            let cToClear = [];
+
+            for(let i=0; i<GRID_SIZE; i++) {
+                if(grid[i].every(c => c !== 0)) rToClear.push(i);
+                let colFull = true;
+                for(let j=0; j<GRID_SIZE; j++) if(grid[j][i] === 0) colFull = false;
+                if(colFull) cToClear.push(i);
+            }
+
+            if(rToClear.length > 0 || cToClear.length > 0) {
+                combo++;
+                shakeTime = 15; // Aktifkan getar layar
+                score += (rToClear.length + cToClear.length) * 150 * combo;
+                document.getElementById('score').innerText = score;
+                document.getElementById('score').style.transform = "scale(1.2)";
+                setTimeout(()=>document.getElementById('score').style.transform="scale(1)", 100);
+
+                if(combo > 1) {
+                    const cb = document.getElementById('combo-notif');
+                    cb.innerText = "COMBO " + combo;
+                    cb.style.display = "block";
+                    setTimeout(() => cb.style.display = "none", 600);
+                }
+
+                rToClear.forEach(r => {
+                    for(let c=0; c<GRID_SIZE; c++) {
+                        createHeavyExplosion(OFFSET_X+c*CELL_SIZE, OFFSET_Y+r*CELL_SIZE, grid[r][c]);
+                        grid[r][c] = 0;
+                    }
+                });
+                cToClear.forEach(c => {
+                    for(let r=0; r<GRID_SIZE; r++) {
+                        if(grid[r][c] !== 0) {
+                            createHeavyExplosion(OFFSET_X+c*CELL_SIZE, OFFSET_Y+r*CELL_SIZE, grid[r][c]);
+                            grid[r][c] = 0;
+                        }
+                    }
+                });
+            } else {
+                combo = 0;
+            }
+        }
+
+        function checkGameOver() {
+            let possible = shapes.some(s => {
+                for(let r=0; r <= GRID_SIZE - s.type.length; r++) {
+                    for(let c=0; c <= GRID_SIZE - s.type[0].length; c++) {
+                        let can = true;
+                        for(let i=0; i<s.type.length; i++) {
+                            for(let j=0; j<s.type[0].length; j++) {
+                                if(s.type[i][j] && grid[r+i][c+j] !== 0) can = false;
+                            }
+                        }
+                        if(can) return true;
+                    }
+                }
+                return false;
+            });
+
+            if(!possible && shapes.length > 0) {
+                isGameOver = true;
+                setTimeout(() => {
+                    document.getElementById('game-over').style.display = 'flex';
+                    document.getElementById('final-score').innerText = score;
+                }, 1000);
+            }
+        }
+
+        function resetGame() {
+            grid = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(0));
+            score = 0; combo = 0; isGameOver = false;
+            document.getElementById('score').innerText = 0;
+            document.getElementById('game-over').style.display = 'none';
+            spawnShapes();
+        }
+
+        function draw() {
+            ctx.save();
+            // Screen Shake Logic
+            if(shakeTime > 0) {
+                ctx.translate(Math.random()*shakeTime - shakeTime/2, Math.random()*shakeTime - shakeTime/2);
+                shakeTime--;
+            }
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Grid BG
+            for(let r=0; r<GRID_SIZE; r++) {
+                for(let c=0; c<GRID_SIZE; c++) {
+                    if(grid[r][c]) {
+                        drawBlock(OFFSET_X + c * CELL_SIZE, OFFSET_Y + r * CELL_SIZE, CELL_SIZE, grid[r][c]);
+                    } else {
+                        ctx.fillStyle = "rgba(255,255,255,0.04)";
+                        ctx.beginPath();
+                        ctx.roundRect(OFFSET_X + c * CELL_SIZE + 2, OFFSET_Y + r * CELL_SIZE + 2, CELL_SIZE - 4, CELL_SIZE - 4, 8);
+                        ctx.fill();
+                    }
+                }
+            }
+
+            // Heavy Particles
+            particles.forEach((p, i) => {
+                ctx.globalAlpha = p.life;
+                ctx.fillStyle = p.color;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI*2);
+                ctx.fill();
+                p.x += p.vx; p.y += p.vy; p.vy += p.gravity;
+                p.life -= 0.03;
+                if(p.life <= 0) particles.splice(i, 1);
+            });
+            ctx.globalAlpha = 1;
+
+            // Preview Shadow
+            if(dragItem && !isGameOver) {
+                let c = Math.round((dragItem.x - OFFSET_X) / CELL_SIZE);
+                let r = Math.round((dragItem.y - OFFSET_Y) / CELL_SIZE);
+                if(r >= 0 && c >= 0 && r + dragItem.type.length <= GRID_SIZE && c + dragItem.type[0].length <= GRID_SIZE) {
+                    dragItem.type.forEach((row, i) => {
+                        row.forEach((v, j) => {
+                            if(v) drawBlock(OFFSET_X + (c+j) * CELL_SIZE, OFFSET_Y + (r+i) * CELL_SIZE, CELL_SIZE, dragItem.color, 0.3);
+                        });
+                    });
+                }
+            }
+
+            // Bottom Shapes
+            shapes.forEach(s => {
+                let sz = CELL_SIZE * s.scale;
+                s.type.forEach((row, i) => {
+                    row.forEach((v, j) => {
+                        if(v) drawBlock(s.x + j * sz, s.y + i * sz, sz, s.color);
+                    });
+                });
+            });
+
+            ctx.restore();
+            requestAnimationFrame(draw);
+        }
+
+        // --- INPUT HANDLING ---
+        function start(ex, ey) {
+            if(isGameOver) return;
+            const rect = canvas.getBoundingClientRect();
+            const tx = (ex - rect.left) * (canvas.width / rect.width);
+            const ty = (ey - rect.top) * (canvas.height / rect.height);
+            shapes.forEach(s => {
+                let w = s.type[0].length * (CELL_SIZE * s.scale);
+                let h = s.type.length * (CELL_SIZE * s.scale);
+                if(tx > s.x - 30 && tx < s.x + w + 30 && ty > s.y - 30 && ty < s.y + h + 30) {
+                    dragItem = s; s.scale = 1.0;
+                }
+            });
+        }
+
+        function move(ex, ey) {
+            if(!dragItem) return;
+            const rect = canvas.getBoundingClientRect();
+            dragItem.x = (ex - rect.left) * (canvas.width / rect.width) - (dragItem.type[0].length * CELL_SIZE)/2;
+            dragItem.y = (ey - rect.top) * (canvas.height / rect.height) - (dragItem.type.length * CELL_SIZE) - 70;
+        }
+
+        function end() {
+            if(!dragItem) return;
+            let c = Math.round((dragItem.x - OFFSET_X) / CELL_SIZE);
+            let r = Math.round((dragItem.y - OFFSET_Y) / CELL_SIZE);
+            
+            let can = true;
+            if(r < 0 || c < 0 || r + dragItem.type.length > GRID_SIZE || c + dragItem.type[0].length > GRID_SIZE) can = false;
+            else {
+                for(let i=0; i<dragItem.type.length; i++) {
+                    for(let j=0; j<dragItem.type[0].length; j++) {
+                        if(dragItem.type[i][j] && grid[r+i][c+j] !== 0) can = false;
+                    }
+                }
+            }
+
+            if(can) {
+                shakeTime = 5; // Getar dikit pas naro
+                dragItem.type.forEach((row, i) => {
+                    row.forEach((v, j) => { 
+                        if(v) {
+                            grid[r+i][c+j] = dragItem.color;
+                            createHeavyExplosion(OFFSET_X+(c+j)*CELL_SIZE, OFFSET_Y+(r+i)*CELL_SIZE, "#FFFFFF");
+                        } 
+                    });
+                });
+                shapes = shapes.filter(s => s !== dragItem);
+                checkClear();
+                if(shapes.length === 0) spawnShapes();
+                else checkGameOver();
+            } else {
+                dragItem.x = dragItem.origX; dragItem.y = dragItem.origY; dragItem.scale = 0.55;
+            }
+            dragItem = null;
+        }
+
+        canvas.addEventListener('touchstart', e => { e.preventDefault(); start(e.touches[0].clientX, e.touches[0].clientY); }, {passive: false});
+        canvas.addEventListener('touchmove', e => { e.preventDefault(); move(e.touches[0].clientX, e.touches[0].clientY); }, {passive: false});
+        canvas.addEventListener('touchend', end);
+        canvas.addEventListener('mousedown', e => start(e.clientX, e.clientY));
+        window.addEventListener('mousemove', e => move(e.clientX, e.clientY));
+        window.addEventListener('mouseup', end);
+
+        init();
+        draw();
+    </script>
+</body>
+</html>
